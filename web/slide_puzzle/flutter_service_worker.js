@@ -3,15 +3,22 @@ const MANIFEST = 'flutter-app-manifest';
 const TEMP = 'flutter-temp-cache';
 const CACHE_NAME = 'flutter-app-cache';
 const RESOURCES = {
-  "index.html": "9c473ce14d9afeb3525b5e9ea752c013",
-"/": "9c473ce14d9afeb3525b5e9ea752c013",
-"main.dart.js": "6de0cc27b62724faeb293a6e79064d92",
-"assets/asset/seattle.jpg": "b3497f8c3eac62f0f696e9423be862a0",
+  "version.json": "7360eddfd93d6f625e7b20b66fdaa9ec",
+"favicon.png": "5dcef449791fa27946b3d35ad8803796",
+"assets/asset/seattle.jpg": "5aba717f317de2d8b24259e6c109322b",
 "assets/asset/fonts/plaster/Plaster-Regular.ttf": "3bdb6c45e898b254e76cd6c164850f94",
+"assets/fonts/MaterialIcons-Regular.otf": "4e6447691c9509f7acdbf8a931a85ca1",
+"assets/NOTICES": "016fe6febe7a137ee8f6635aaf4dbb07",
+"assets/FontManifest.json": "f0a8246bfb399b5df0043e73f578e332",
 "assets/AssetManifest.json": "ecb4d39e576209dc5ae70fad278c3df6",
-"assets/NOTICES": "9053f47b719336e01c65c0ddf1f5ea69",
-"assets/FontManifest.json": "a397d647e4c43d7aa824b52dd59799bd",
-"assets/fonts/MaterialIcons-Regular.ttf": "56d3ffdef7a25659eab6a68a3fbfaf16"
+"icons/Icon-192.png": "ac9a721a12bbc803b44f645561ecb1e1",
+"icons/Icon-maskable-512.png": "301a7604d45b3e739efc881eb04896ea",
+"icons/Icon-maskable-192.png": "c457ef57daa1d16f64b27b786ec2ea3c",
+"icons/Icon-512.png": "96e752610906ba2a93c65f8abe1645f1",
+"main.dart.js": "e860c4a8433e22edfaefff8d164ff9d6",
+"manifest.json": "0567201f1f510a6af2f372f309dfe098",
+"index.html": "7aa1778797840722fbc543b8fb6ef3ab",
+"/": "7aa1778797840722fbc543b8fb6ef3ab"
 };
 
 // The application shell files that are downloaded before a service worker can
@@ -20,16 +27,16 @@ const CORE = [
   "/",
 "main.dart.js",
 "index.html",
-"assets/LICENSE",
+"assets/NOTICES",
 "assets/AssetManifest.json",
 "assets/FontManifest.json"];
-
 // During install, the TEMP cache is populated with the application shell files.
 self.addEventListener("install", (event) => {
+  self.skipWaiting();
   return event.waitUntil(
     caches.open(TEMP).then((cache) => {
-      // Provide a no-cache param to ensure the latest version is downloaded.
-      return cache.addAll(CORE.map((value) => new Request(value, {'cache': 'no-cache'})));
+      return cache.addAll(
+        CORE.map((value) => new Request(value, {'cache': 'reload'})));
     })
   );
 });
@@ -44,7 +51,6 @@ self.addEventListener("activate", function(event) {
       var tempCache = await caches.open(TEMP);
       var manifestCache = await caches.open(MANIFEST);
       var manifest = await manifestCache.match('manifest');
-
       // When there is no prior manifest, clear the entire cache.
       if (!manifest) {
         await caches.delete(CACHE_NAME);
@@ -58,7 +64,6 @@ self.addEventListener("activate", function(event) {
         await manifestCache.put('manifest', new Response(JSON.stringify(RESOURCES)));
         return;
       }
-
       var oldManifest = await manifest.json();
       var origin = self.location.origin;
       for (var request of await contentCache.keys()) {
@@ -96,24 +101,33 @@ self.addEventListener("activate", function(event) {
 // The fetch handler redirects requests for RESOURCE files to the service
 // worker cache.
 self.addEventListener("fetch", (event) => {
+  if (event.request.method !== 'GET') {
+    return;
+  }
   var origin = self.location.origin;
   var key = event.request.url.substring(origin.length + 1);
   // Redirect URLs to the index.html
-  if (event.request.url == origin || event.request.url.startsWith(origin + '/#')) {
+  if (key.indexOf('?v=') != -1) {
+    key = key.split('?v=')[0];
+  }
+  if (event.request.url == origin || event.request.url.startsWith(origin + '/#') || key == '') {
     key = '/';
   }
-  // If the URL is not the the RESOURCE list, skip the cache.
+  // If the URL is not the RESOURCE list then return to signal that the
+  // browser should take over.
   if (!RESOURCES[key]) {
-    return event.respondWith(fetch(event.request));
+    return;
+  }
+  // If the URL is the index.html, perform an online-first request.
+  if (key == '/') {
+    return onlineFirst(event);
   }
   event.respondWith(caches.open(CACHE_NAME)
     .then((cache) =>  {
       return cache.match(event.request).then((response) => {
         // Either respond with the cached resource, or perform a fetch and
-        // lazily populate the cache. Ensure the resources are not cached
-        // by the browser for longer than the service worker expects.
-        var modifiedRequest = new Request(event.request, {'cache': 'no-cache'});
-        return response || fetch(modifiedRequest).then((response) => {
+        // lazily populate the cache.
+        return response || fetch(event.request).then((response) => {
           cache.put(event.request, response.clone());
           return response;
         });
@@ -125,12 +139,13 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener('message', (event) => {
   // SkipWaiting can be used to immediately activate a waiting service worker.
   // This will also require a page refresh triggered by the main worker.
-  if (event.message == 'skipWaiting') {
-    return self.skipWaiting();
+  if (event.data === 'skipWaiting') {
+    self.skipWaiting();
+    return;
   }
-
-  if (event.message = 'downloadOffline') {
+  if (event.data === 'downloadOffline') {
     downloadOffline();
+    return;
   }
 });
 
@@ -147,10 +162,32 @@ async function downloadOffline() {
     }
     currentContent[key] = true;
   }
-  for (var resourceKey in Object.keys(RESOURCES)) {
+  for (var resourceKey of Object.keys(RESOURCES)) {
     if (!currentContent[resourceKey]) {
-      resources.add(resourceKey);
+      resources.push(resourceKey);
     }
   }
-  return Cache.addAll(resources);
+  return contentCache.addAll(resources);
+}
+
+// Attempt to download the resource online before falling back to
+// the offline cache.
+function onlineFirst(event) {
+  return event.respondWith(
+    fetch(event.request).then((response) => {
+      return caches.open(CACHE_NAME).then((cache) => {
+        cache.put(event.request, response.clone());
+        return response;
+      });
+    }).catch((error) => {
+      return caches.open(CACHE_NAME).then((cache) => {
+        return cache.match(event.request).then((response) => {
+          if (response != null) {
+            return response;
+          }
+          throw error;
+        });
+      });
+    })
+  );
 }
